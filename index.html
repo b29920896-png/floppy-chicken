@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flappy Bird</title>
+<style>
+  body{margin:0;background:#222;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:Arial,sans-serif;color:#fff}
+  #wrap{position:relative;width:min(400px,100vw,calc(100vh * 2 / 3));aspect-ratio:2/3}
+  canvas{width:100%;height:100%;display:block;touch-action:none}
+  #menu{position:absolute;inset:0;background:rgba(0,0,0,.75);display:flex;flex-direction:column;align-items:center;padding:14px;box-sizing:border-box;overflow:auto;text-align:center}
+  h1{margin:6px 0}h3{margin:12px 0 4px}p{margin:4px 0}
+  input{padding:8px;font-size:16px;border-radius:6px;border:0;text-align:center;width:180px}
+  button{cursor:pointer;font-size:16px;border:0;border-radius:6px;padding:8px 18px;margin:6px 0}
+  .link{background:none;color:#9cf;text-decoration:underline;padding:2px}
+  #err{color:#ff6b6b;min-height:18px;font-size:14px}
+  #colors{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin:8px 0}
+  .sw{width:30px;height:30px;border-radius:50%;padding:0;margin:0;border:3px solid #555}
+  .sw.on{border-color:#fff}
+  ol{padding:0;margin:0;list-style:none;text-align:left}
+  li{margin:3px 0}li.me{color:#ffd700}
+  .dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;border:1px solid #000}
+  .hint{font-size:13px;color:#bbb;margin-top:10px}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="400" height="600"></canvas>
+  <div id="menu">
+    <h1>Flappy Bird</h1>
+    <p id="info"></p>
+    <div id="nameBox"><input id="name" maxlength="12" placeholder="Your name" autocomplete="off"><div id="err"></div></div>
+    <div id="who"></div>
+    <div id="colors"></div>
+    <button id="play">Play</button>
+    <button id="newName" class="link">Change name</button>
+    <h3>Top Players</h3>
+    <ol id="board"></ol>
+    <p class="hint">Tap, click, or press SPACE to flap</p>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d');
+const W = 400, H = 600, FPS = 60;
+
+// ---------- Settings you can tweak! ----------
+const GRAVITY = 0.5, FLAP = -8, SPEED = 3, GAP = 160, PW = 60, DIST = 220;
+const BX = 80, BS = 30, CHANCE = 0.3;
+const COLORS = [["Yellow","#ffd700"],["Red","#e63232"],["Blue","#3c78ff"],["Green","#96e632"],
+                ["Pink","#ff82be"],["Purple","#a05adc"],["Orange","#ff961e"],["White","#f5f5f5"],["Black","#282828"]];
+const POWER = {
+  shield: {label:"Shield",    sec:5, color:"#0078ff", icon:"S"},
+  slow:   {label:"Slow-Mo",   sec:6, color:"#a050dc", icon:"Z"},
+  double: {label:"2x Points", sec:8, color:"#ff8c00", icon:"2x"}
+};
+
+// ---------- Leaderboard (saved in this browser) ----------
+const KEY = "flappy_scores";
+let scores = [];
+try { scores = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+if (!Array.isArray(scores)) scores = [];
+scores = scores.filter(p => p && typeof p.name === "string" && Number.isFinite(p.score));
+scores.forEach(p => { if (!(p.color >= 0 && p.color < COLORS.length)) p.color = 0; });
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(scores)); } catch (e) {} };
+
+// ---------- Game state ----------
+let player = null, colorIdx = 0, state = "menu", result = "", newBest = false;
+let bird, vel, pipes, score, effects;
+
+function newPipe() {
+  return {x: W, gap: 150 + Math.random() * (H - 300), scored: false,
+          power: Math.random() < CHANCE ? Object.keys(POWER)[Math.floor(Math.random() * 3)] : null};
+}
+function reset() { bird = H / 2; vel = 0; pipes = [newPipe()]; score = 0; effects = {}; }
+reset();
+
+// ---------- Menu ----------
+function showMenu() {
+  state = "menu";
+  $('menu').style.display = "flex";
+  $('info').textContent = result || "Choose a name and a bird color";
+  $('nameBox').style.display = player ? "none" : "block";
+  $('who').textContent = player ? "Playing as " + player.name : "";
+  $('newName').style.display = player ? "inline" : "none";
+  $('play').textContent = player ? "Play again" : "Play";
+
+  $('colors').innerHTML = "";
+  COLORS.forEach((c, i) => {
+    const b = document.createElement("button");
+    b.className = "sw" + (i === colorIdx ? " on" : "");
+    b.style.background = c[1]; b.title = c[0];
+    b.onclick = () => { colorIdx = i; if (player) { player.color = i; save(); } showMenu(); };
+    $('colors').appendChild(b);
+  });
+
+  $('board').innerHTML = "";
+  const top = scores.filter(p => p.score > 0).sort((a, b) => b.score - a.score).slice(0, 5);
+  if (!top.length) { const li = document.createElement("li"); li.textContent = "No scores yet"; $('board').appendChild(li); }
+  top.forEach((p, i) => {
+    const li = document.createElement("li"), dot = document.createElement("span");
+    dot.className = "dot"; dot.style.background = COLORS[p.color][1];
+    if (p === player) li.className = "me";
+    li.append(dot, (i + 1) + ". " + p.name + " - " + p.score);
+    $('board').appendChild(li);
+  });
+}
+const err = msg => { $('err').textContent = msg; };
+$('name').oninput = () => err("");
+$('name').onkeydown = e => { if (e.key === "Enter") $('play').click(); };
+$('newName').onclick = () => { player = null; $('name').value = ""; result = ""; showMenu(); };
+$('play').onclick = () => {
+  if (!player) {
+    const n = $('name').value.trim();
+    if (!n) return err("Please type a name.");
+    if (!/^[A-Za-z0-9 _-]+$/.test(n)) return err("Use letters, numbers, spaces, _ or -");
+    if (scores.some(p => p.name.toLowerCase() === n.toLowerCase())) return err("That name is already taken!");
+    player = {name: n, score: 0, color: colorIdx};
+    scores.push(player); save();
+  }
+  result = ""; reset(); state = "ready";
+  $('menu').style.display = "none";
+  if (document.activeElement) document.activeElement.blur();
+};
+
+// ---------- Input ----------
+function flap() {
+  if (state === "ready") { state = "play"; vel = FLAP; }
+  else if (state === "play") vel = FLAP;
+}
+cv.addEventListener("pointerdown", e => { e.preventDefault(); flap(); });
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); flap(); }
+});
+
+// ---------- Update ----------
+function gameOver() {
+  state = "over";
+  newBest = score > player.score;
+  if (newBest) { player.score = score; save(); }
+  result = "Score: " + score + (newBest ? " - new personal best!" : "");
+  setTimeout(showMenu, 700);
+}
+
+function update() {
+  if (state !== "play") return;
+  const sp = SPEED * (effects.slow ? 0.5 : 1);
+  vel += GRAVITY; bird += vel;
+  pipes.forEach(p => p.x -= sp);
+  if (pipes[pipes.length - 1].x < W - DIST) pipes.push(newPipe());
+  if (pipes[0].x < -PW) pipes.shift();
+
+  const shield = !!effects.shield;
+  let crash = false;
+  if (bird < 0 || bird > H) {
+    if (shield) { bird = Math.max(0, Math.min(H, bird)); vel = 0; } else crash = true;
+  }
+  const bx = BX - BS / 2, by = bird - BS / 2;
+  const hit = r => bx < r.x + r.w && bx + BS > r.x && by < r.y + r.h && by + BS > r.y;
+
+  for (const p of pipes) {
+    const top = {x: p.x, y: 0, w: PW, h: p.gap - GAP / 2};
+    const bot = {x: p.x, y: p.gap + GAP / 2, w: PW, h: H};
+    if (!shield && (hit(top) || hit(bot))) crash = true;
+    if (p.power && hit({x: p.x + PW / 2 - 14, y: p.gap - 14, w: 28, h: 28})) {
+      effects[p.power] = POWER[p.power].sec * FPS; p.power = null;
+    }
+    if (!p.scored && p.x + PW < BX) { p.scored = true; score += effects.double ? 2 : 1; }
+  }
+  for (const k in effects) if (--effects[k] <= 0) delete effects[k];
+  if (crash) gameOver();
+}
+
+// ---------- Draw ----------
+function text(t, x, y, size, color, align) {
+  ctx.font = "bold " + size + "px Arial"; ctx.textAlign = align || "center";
+  ctx.fillStyle = color || "#fff"; ctx.fillText(t, x, y);
+}
+function drawBird(x, y, color) {
+  ctx.fillStyle = color; ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, BS / 2, 0, 7); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#ff7800"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + 12, y - 1); ctx.lineTo(x + 22, y + 3); ctx.lineTo(x + 12, y + 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x + 5, y - 4, 5, 0, 7); ctx.fill();
+  ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(x + 7, y - 4, 2, 0, 7); ctx.fill();
+}
+function draw() {
+  ctx.fillStyle = "#87ceeb"; ctx.fillRect(0, 0, W, H);
+  for (const p of pipes) {
+    ctx.fillStyle = "#3cb44b";
+    ctx.fillRect(p.x, 0, PW, p.gap - GAP / 2);
+    ctx.fillRect(p.x, p.gap + GAP / 2, PW, H);
+    if (p.power) {
+      const info = POWER[p.power], cx = p.x + PW / 2;
+      ctx.fillStyle = info.color; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, p.gap, 14, 0, 7); ctx.fill(); ctx.stroke();
+      text(info.icon, cx, p.gap + 5, 14);
+    }
+  }
+  drawBird(BX, bird, COLORS[colorIdx][1]);
+  if (effects.shield && (effects.shield > 90 || Math.floor(effects.shield / 6) % 2 === 0)) {
+    ctx.strokeStyle = POWER.shield.color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(BX, bird, BS / 2 + 7, 0, 7); ctx.stroke();
+  }
+  if (state !== "menu") text(score, W / 2, 70, 56);
+  if (player) text(player.name, 10, 20, 16, "#fff", "left");
+  let i = 0;
+  for (const k in effects) text(POWER[k].label + " " + (effects[k] / FPS).toFixed(1) + "s", 10, 48 + i++ * 24, 18, POWER[k].color, "left");
+  if (state === "ready") text("Tap or press SPACE to start", W / 2, H / 2 + 60, 22);
+  if (state === "over") text("Game Over", W / 2, H / 2, 48);
+}
+
+// ---------- Main loop (fixed 60 updates per second on any screen) ----------
+let last = 0, acc = 0;
+function loop(t) {
+  acc += Math.min(t - last, 100); last = t;
+  while (acc >= 1000 / FPS) { update(); acc -= 1000 / FPS; }
+  draw();
+  requestAnimationFrame(loop);
+}
+showMenu();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
